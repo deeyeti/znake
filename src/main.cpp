@@ -22,21 +22,26 @@
 #include <vector>
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-static constexpr int    GRID_W     = 30;
-static constexpr int    GRID_H     = 30;
-static constexpr int    WIN_W      = 840;
-static constexpr int    WIN_H      = 840;
-static constexpr float  CELL_W     = (float)WIN_W / GRID_W;
-static constexpr float  CELL_H     = (float)WIN_H / GRID_H;
-static constexpr double STEP_SECS  = 0.10;   // game tick every 100 ms
+static constexpr int    GRID_W     = 48;
+static constexpr int    GRID_H     = 27;
+static constexpr int    WIN_W      = 960;
+static constexpr int    WIN_H      = 540;
+static constexpr float  CELL_W     = (float)WIN_W / GRID_W;  // 20
+static constexpr float  CELL_H     = (float)WIN_H / GRID_H;  // 20
+static constexpr double STEP_SECS  = 0.10;
+static constexpr int    PU_TICKS   = 50;   // 5s at 100ms/tick
+static constexpr int    PU_LIFETIME  = 25;
+static constexpr int    PU_SPAWN_GAP = 18;
 
 // Colours — cute pastel palette
-static const glm::vec3 C_P1    = {1.000f, 0.702f, 0.851f}; // #ffb3d9 pastel pink
-static const glm::vec3 C_P2    = {0.702f, 0.831f, 1.000f}; // #b3d4ff pastel blue
-static const glm::vec3 C_FOOD  = {1.000f, 0.961f, 0.702f}; // #fff5b3 pastel yellow
-static const glm::vec3 C_FOOD2 = {0.851f, 0.702f, 1.000f}; // #d9b3ff lilac accent
-static const glm::vec3 C_BG    = {0.102f, 0.082f, 0.145f}; // #1a1525 deep purple
-static const glm::vec3 C_GRID  = {0.160f, 0.125f, 0.220f}; // subtle grid dot
+static const glm::vec3 C_P1       = {1.000f, 0.702f, 0.851f};
+static const glm::vec3 C_P2       = {0.702f, 0.831f, 1.000f};
+static const glm::vec3 C_FOOD     = {1.000f, 0.961f, 0.702f};
+static const glm::vec3 C_FOOD2    = {0.851f, 0.702f, 1.000f};
+static const glm::vec3 C_BG       = {0.102f, 0.082f, 0.145f};
+static const glm::vec3 C_GRID     = {0.160f, 0.125f, 0.220f};
+static const glm::vec3 C_SPEED_PU  = {0.702f, 1.000f, 0.878f}; // mint  ⚡
+static const glm::vec3 C_SHIELD_PU = {1.000f, 0.863f, 0.431f}; // gold  🛡
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 static std::string readFile(const std::string& path)
@@ -97,18 +102,31 @@ struct Snake
 {
     std::deque<glm::ivec2> body;
     glm::ivec2             dir;
-    glm::ivec2             nextDir;  // buffered input
+    glm::ivec2             nextDir;
     glm::vec3              color;
-    bool                   grew     = false;
-    bool                   alive    = true;
+    bool                   grew        = false;
+    bool                   alive       = true;
+    int                    speedTimer  = 0;  // ticks remaining
+    int                    shieldTimer = 0;
+};
+
+enum class PUType { None, Speed, Shield };
+
+struct PowerUp
+{
+    glm::ivec2 pos   = {-1, -1};
+    PUType     type  = PUType::None;
+    int        life  = 0;
 };
 
 struct GameState
 {
-    Snake         p1, p2;
-    glm::ivec2    food;
-    bool          over     = false;
-    int           winner   = 0;  // 0=none 1=P1 2=P2 -1=tie
+    Snake     p1, p2;
+    glm::ivec2 food;
+    PowerUp   powerup;
+    int       puSpawnTimer = PU_SPAWN_GAP;
+    bool      over    = false;
+    int       winner  = 0;
 };
 
 static std::mt19937 rng(std::random_device{}());
@@ -128,11 +146,32 @@ static void spawnFood(GameState& g)
         for (int x = 0; x < GRID_W; ++x)
         {
             glm::ivec2 p{x, y};
-            if (!occupied(g, p)) free.push_back(p);
+            if (!occupied(g, p) && p != g.food) free.push_back(p);
         }
     if (free.empty()) return;
     std::uniform_int_distribution<int> d(0, (int)free.size() - 1);
     g.food = free[d(rng)];
+}
+
+static void spawnPowerup(GameState& g)
+{
+    std::uniform_int_distribution<int> tx(0, GRID_W-1), ty(0, GRID_H-1);
+    std::vector<glm::ivec2> free;
+    free.reserve(GRID_W * GRID_H);
+    for (int y = 0; y < GRID_H; ++y)
+        for (int x = 0; x < GRID_W; ++x)
+        {
+            glm::ivec2 p{x,y};
+            if (!occupied(g, p) && p != g.food) free.push_back(p);
+        }
+    if (free.empty()) return;
+    std::uniform_int_distribution<int> pick(0, (int)free.size()-1);
+    std::uniform_int_distribution<int> typeD(0, 1);
+    g.powerup.pos  = free[pick(rng)];
+    g.powerup.type = typeD(rng) ? PUType::Speed : PUType::Shield;
+    g.powerup.life = PU_LIFETIME;
+    std::uniform_int_distribution<int> gapD(0, 9);
+    g.puSpawnTimer = PU_SPAWN_GAP + gapD(rng);
 }
 
 static void resetGame(GameState& g)
@@ -140,82 +179,108 @@ static void resetGame(GameState& g)
     g.over   = false;
     g.winner = 0;
 
-    // P1 — starts mid-left, heading right
     g.p1.body.clear();
     g.p1.body.push_back({5, GRID_H / 2});
     g.p1.body.push_back({4, GRID_H / 2});
     g.p1.body.push_back({3, GRID_H / 2});
-    g.p1.dir     = {1, 0};
-    g.p1.nextDir = {1, 0};
-    g.p1.color   = C_P1;
-    g.p1.alive   = true;
-    g.p1.grew    = false;
+    g.p1.dir = g.p1.nextDir = {1, 0};
+    g.p1.color = C_P1; g.p1.alive = true; g.p1.grew = false;
+    g.p1.speedTimer = g.p1.shieldTimer = 0;
 
-    // P2 — starts mid-right, heading left
     g.p2.body.clear();
     g.p2.body.push_back({GRID_W - 6, GRID_H / 2});
     g.p2.body.push_back({GRID_W - 5, GRID_H / 2});
     g.p2.body.push_back({GRID_W - 4, GRID_H / 2});
-    g.p2.dir     = {-1, 0};
-    g.p2.nextDir = {-1, 0};
-    g.p2.color   = C_P2;
-    g.p2.alive   = true;
-    g.p2.grew    = false;
+    g.p2.dir = g.p2.nextDir = {-1, 0};
+    g.p2.color = C_P2; g.p2.alive = true; g.p2.grew = false;
+    g.p2.speedTimer = g.p2.shieldTimer = 0;
 
+    g.powerup = {};
+    g.puSpawnTimer = PU_SPAWN_GAP;
     spawnFood(g);
 }
 
-// Advance one snake — returns true if it hit the OTHER snake's body or itself
-static bool stepSnake(Snake& self, const Snake& other, glm::ivec2& food, bool& foodEaten)
+// stepSnake: returns {dead, atePowerup}
+struct StepResult { bool dead; bool atePowerup; };
+
+static StepResult stepSnake(Snake& self, const Snake& other, GameState& g, bool& foodEaten)
 {
-    // Apply buffered direction (prevent 180-degree reversal)
     glm::ivec2 nd = self.nextDir;
-    if (nd + self.dir != glm::ivec2{0, 0})  // not directly opposite
-        self.dir = nd;
+    if (nd + self.dir != glm::ivec2{0,0}) self.dir = nd;
 
     glm::ivec2 newHead = self.body.front() + self.dir;
-
-    // Wrap around
     newHead.x = (newHead.x + GRID_W) % GRID_W;
     newHead.y = (newHead.y + GRID_H) % GRID_H;
 
-    // Push new head
     self.body.push_front(newHead);
     self.grew = false;
 
-    // Food check
-    if (newHead == food)
-    {
-        self.grew  = true;
-        foodEaten  = true;
+    bool atePowerup = false;
+    if (newHead == g.food) {
+        self.grew = true; foodEaten = true;
+    } else if (g.powerup.type != PUType::None && newHead == g.powerup.pos) {
+        atePowerup = true;  // no grow
     }
-    if (!self.grew)
-        self.body.pop_back();
+    if (!self.grew) self.body.pop_back();
 
-    // Self-collision (skip index 0 = newHead itself)
     for (int i = 1; i < (int)self.body.size(); ++i)
-        if (self.body[i] == newHead) return true;
-
-    // Collision with other snake
+        if (self.body[i] == newHead) return {true, atePowerup};
     for (auto& seg : other.body)
-        if (seg == newHead) return true;
+        if (seg == newHead) return {true, atePowerup};
 
-    return false;
+    return {false, atePowerup};
 }
 
 static void tickGame(GameState& g)
 {
     if (g.over) return;
 
-    bool foodEaten1 = false, foodEaten2 = false;
+    // Snapshot then decrement timers
+    bool p1speed  = g.p1.speedTimer  > 0;
+    bool p1shield = g.p1.shieldTimer > 0;
+    bool p2speed  = g.p2.speedTimer  > 0;
+    bool p2shield = g.p2.shieldTimer > 0;
+    if (g.p1.speedTimer  > 0) g.p1.speedTimer--;
+    if (g.p1.shieldTimer > 0) g.p1.shieldTimer--;
+    if (g.p2.speedTimer  > 0) g.p2.speedTimer--;
+    if (g.p2.shieldTimer > 0) g.p2.shieldTimer--;
 
-    bool p1dead = stepSnake(g.p1, g.p2, g.food, foodEaten1);
-    bool p2dead = stepSnake(g.p2, g.p1, g.food, foodEaten2);
+    // Powerup lifetime
+    if (g.powerup.type != PUType::None)
+        if (--g.powerup.life <= 0) g.powerup = {};
+    if (g.powerup.type == PUType::None && --g.puSpawnTimer <= 0)
+        spawnPowerup(g);
 
-    if (foodEaten1 || foodEaten2) spawnFood(g);
-
-    if (p1dead || p2dead)
+    bool p1dead = false, p2dead = false;
+    for (int step = 0; step < 2; ++step)
     {
+        bool doP1 = (step == 0) || p1speed;
+        bool doP2 = (step == 0) || p2speed;
+        bool fe1 = false, fe2 = false;
+        StepResult r1{}, r2{};
+
+        if (doP1 && !p1dead) r1 = stepSnake(g.p1, g.p2, g, fe1);
+        if (doP2 && !p2dead) r2 = stepSnake(g.p2, g.p1, g, fe2);
+
+        if (fe1 || fe2) spawnFood(g);
+
+        PUType puType = g.powerup.type;
+        if (r1.atePowerup) {
+            if (puType == PUType::Speed)  g.p1.speedTimer  = PU_TICKS;
+            if (puType == PUType::Shield) g.p1.shieldTimer = PU_TICKS;
+            g.powerup = {}; g.puSpawnTimer = PU_SPAWN_GAP;
+        }
+        if (r2.atePowerup) {
+            if (puType == PUType::Speed)  g.p2.speedTimer  = PU_TICKS;
+            if (puType == PUType::Shield) g.p2.shieldTimer = PU_TICKS;
+            g.powerup = {}; g.puSpawnTimer = PU_SPAWN_GAP;
+        }
+
+        if (r1.dead && !p1shield) p1dead = true;
+        if (r2.dead && !p2shield) p2dead = true;
+    }
+
+    if (p1dead || p2dead) {
         g.over = true;
         if (p1dead && p2dead) g.winner = -1;
         else if (p1dead)      g.winner =  2;
@@ -447,8 +512,17 @@ static void renderFrame(const GameState& g, GL& gl, float time)
     glm::vec3 fc   = glm::mix(C_FOOD, C_FOOD2, foodLerp);
     push(g.food, fc * pulse, 0.f, {0.f, 0.f});
 
-    // Snake bodies — gradient fade head→tail, head segment gets eyes
+    // Power-up — pulsing mint (speed) or gold (shield)
+    if (g.powerup.type != PUType::None)
+    {
+        float puPulse = 0.80f + 0.20f * std::abs(std::sin(time * 6.0f));
+        glm::vec3 puC = (g.powerup.type == PUType::Speed) ? C_SPEED_PU : C_SHIELD_PU;
+        push(g.powerup.pos, puC * puPulse, 0.f, {0.f, 0.f});
+    }
+
+    // Snake bodies — gradient fade, shield tint, eyes on head
     const float tailDim = 0.55f;
+    const float shieldTint = 0.25f;
     glm::vec2 dir1 = glm::vec2(g.p1.dir);
     glm::vec2 dir2 = glm::vec2(g.p2.dir);
 
@@ -456,15 +530,17 @@ static void renderFrame(const GameState& g, GL& gl, float time)
     {
         float t    = g.p1.body.size() > 1 ? (float)i / ((float)g.p1.body.size() - 1.f) : 0.f;
         float fade = 1.0f - t * (1.0f - tailDim);
-        float head = (i == 0) ? 1.f : 0.f;
-        push(g.p1.body[i], g.p1.color * fade, head, dir1);
+        float sh   = (g.p1.shieldTimer > 0) ? shieldTint : 0.f;
+        glm::vec3 col = glm::min(g.p1.color * fade + sh, glm::vec3(1.f));
+        push(g.p1.body[i], col, (i == 0) ? 1.f : 0.f, dir1);
     }
     for (int i = 0; i < (int)g.p2.body.size(); ++i)
     {
         float t    = g.p2.body.size() > 1 ? (float)i / ((float)g.p2.body.size() - 1.f) : 0.f;
         float fade = 1.0f - t * (1.0f - tailDim);
-        float head = (i == 0) ? 1.f : 0.f;
-        push(g.p2.body[i], g.p2.color * fade, head, dir2);
+        float sh   = (g.p2.shieldTimer > 0) ? shieldTint : 0.f;
+        glm::vec3 col = glm::min(g.p2.color * fade + sh, glm::vec3(1.f));
+        push(g.p2.body[i], col, (i == 0) ? 1.f : 0.f, dir2);
     }
 
     // ── Base pass → FBO ──────────────────────────────────────────────────────

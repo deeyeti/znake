@@ -271,13 +271,25 @@ body {
 .frame-corner.br { bottom: -2px; right: -2px; border-bottom: 3px solid var(--pastel-yellow); border-right: 3px solid var(--pastel-yellow); border-radius: 0 0 4px 0; }
 
 /* Canvas itself */
+.buff-icon {
+    font-size: 0.8rem;
+    min-width: 1.2em;
+    text-align: center;
+    animation: buffPulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes buffPulse {
+    0%   { transform: scale(0.9); opacity: 0.8; }
+    100% { transform: scale(1.15); opacity: 1.0; }
+}
+
 canvas {
     display: block;
     border-radius: 10px;
     background-color: #1e1830;
     image-rendering: pixelated;
-    max-width: 88vw;
-    max-height: 72vh;
+    max-width: 94vw;
+    max-height: 68vh;
     object-fit: contain;
 }
 

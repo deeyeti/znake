@@ -1,25 +1,37 @@
-const GRID_W = 30;
-const GRID_H = 30;
-const WIN_W = 840;
-const WIN_H = 840;
-const CELL_W = WIN_W / GRID_W;
-const CELL_H = WIN_H / GRID_H;
+// 16:9 landscape board — 48×27 grid = 20px cells
+const GRID_W = 48;
+const GRID_H = 27;
+const WIN_W  = 960;
+const WIN_H  = 540;
+const CELL_W = WIN_W / GRID_W;  // 20
+const CELL_H = WIN_H / GRID_H;  // 20
 const STEP_MS = 100;
 
+// Power-up durations
+const PU_TICKS    = 50;   // 50 * 100ms = 5 seconds
+const PU_LIFETIME = 25;   // ticks a powerup stays on board
+const PU_SPAWN_GAP = 18;  // ticks between spawn attempts
+
 // Cute pastel palette
-const C_P1 = [1.0, 0.702, 0.851];     // #ffb3d9 pastel pink
-const C_P2 = [0.702, 0.831, 1.0];     // #b3d4ff pastel blue
-const C_FOOD = [1.0, 0.961, 0.702];   // #fff5b3 pastel yellow
-const C_BG = [0.102, 0.082, 0.145];   // #1a1525 deep purple
-const C_GRID = [0.16, 0.125, 0.22];   // subtle grid line color
-const C_FOOD2 = [0.851, 0.702, 1.0];  // #d9b3ff lilac accent
+const C_P1       = [1.0,   0.702, 0.851];  // #ffb3d9 pink
+const C_P2       = [0.702, 0.831, 1.0  ];  // #b3d4ff blue
+const C_FOOD     = [1.0,   0.961, 0.702];  // #fff5b3 yellow
+const C_FOOD2    = [0.851, 0.702, 1.0  ];  // #d9b3ff lilac
+const C_BG       = [0.102, 0.082, 0.145];  // #1a1525 deep purple
+const C_GRID     = [0.16,  0.125, 0.22 ];  // subtle grid dot
+const C_SPEED_PU  = [0.702, 1.0,   0.878];  // #b3ffd9 mint  ⚡
+const C_SHIELD_PU = [1.0,   0.863, 0.431];  // #ffdc6e gold  🛡️
 
 let game = {
-    p1: { body: [], dir: { x: 1, y: 0 }, nextDir: { x: 1, y: 0 }, color: C_P1, alive: true, grew: false },
-    p2: { body: [], dir: { x: -1, y: 0 }, nextDir: { x: -1, y: 0 }, color: C_P2, alive: true, grew: false },
-    food: { x: 0, y: 0 },
+    p1: { body: [], dir: {x:1,y:0}, nextDir: {x:1,y:0}, color: C_P1,
+          alive: true, grew: false, speedTimer: 0, shieldTimer: 0 },
+    p2: { body: [], dir: {x:-1,y:0}, nextDir: {x:-1,y:0}, color: C_P2,
+          alive: true, grew: false, speedTimer: 0, shieldTimer: 0 },
+    food: {x:0, y:0},
+    powerup: {x:-1, y:-1, type:'none', lifetime:0},
+    powerupSpawnTimer: PU_SPAWN_GAP,
     over: false,
-    winner: 0 // 0=none, 1=p1, 2=p2, -1=tie
+    winner: 0
 };
 
 function occupied(x, y) {
@@ -61,8 +73,33 @@ function resetGame() {
     game.p2.nextDir = { x: -1, y: 0 };
     game.p2.alive = true;
 
+    // Reset power-up state
+    game.p1.speedTimer  = 0; game.p1.shieldTimer = 0;
+    game.p2.speedTimer  = 0; game.p2.shieldTimer = 0;
+    game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
+    game.powerupSpawnTimer = PU_SPAWN_GAP;
+
     spawnFood();
     updateUI();
+}
+
+function spawnPowerup() {
+    // Pick a free cell not occupied by snakes or food
+    let free = [];
+    for (let y = 0; y < GRID_H; y++)
+        for (let x = 0; x < GRID_W; x++)
+            if (!occupied(x,y) && !(x===game.food.x && y===game.food.y))
+                free.push({x,y});
+    if (free.length === 0) return;
+    let pos  = free[Math.floor(Math.random() * free.length)];
+    let type = Math.random() < 0.5 ? 'speed' : 'shield';
+    game.powerup = {x:pos.x, y:pos.y, type, lifetime:PU_LIFETIME};
+    game.powerupSpawnTimer = PU_SPAWN_GAP + Math.floor(Math.random() * 10);
+}
+
+function activatePowerup(player, type) {
+    if (type === 'speed')  player.speedTimer  = PU_TICKS;
+    if (type === 'shield') player.shieldTimer = PU_TICKS;
 }
 
 function stepSnake(self, other) {
@@ -80,59 +117,118 @@ function stepSnake(self, other) {
 
     self.body.unshift(newHead);
     self.grew = false;
-    let ateFood = false;
+    let ateFood = false, atePowerup = false;
 
     if (newHead.x === game.food.x && newHead.y === game.food.y) {
         self.grew = true;
         ateFood = true;
+    } else if (game.powerup.type !== 'none' &&
+               newHead.x === game.powerup.x && newHead.y === game.powerup.y) {
+        atePowerup = true;  // powerup doesn't grow the snake
     }
 
-    if (!self.grew) {
-        self.body.pop();
-    }
+    if (!self.grew) self.body.pop();
 
-    // Check collisions
+    // Collision check
     let dead = false;
-    for (let i = 1; i < self.body.length; ++i) {
+    for (let i = 1; i < self.body.length; ++i)
         if (self.body[i].x === newHead.x && self.body[i].y === newHead.y) dead = true;
-    }
-    for (let seg of other.body) {
+    for (let seg of other.body)
         if (seg.x === newHead.x && seg.y === newHead.y) dead = true;
-    }
 
-    return { dead, ateFood };
+    return { dead, ateFood, atePowerup };
 }
 
 function tickGame() {
     if (game.over) return;
 
-    let res1 = stepSnake(game.p1, game.p2);
-    let res2 = stepSnake(game.p2, game.p1);
+    // Snapshot speed/shield BEFORE decrement (so we apply full-tick benefit)
+    const p1speed  = game.p1.speedTimer  > 0;
+    const p1shield = game.p1.shieldTimer > 0;
+    const p2speed  = game.p2.speedTimer  > 0;
+    const p2shield = game.p2.shieldTimer > 0;
 
-    if (res1.ateFood || res2.ateFood) spawnFood();
+    if (game.p1.speedTimer  > 0) game.p1.speedTimer--;
+    if (game.p1.shieldTimer > 0) game.p1.shieldTimer--;
+    if (game.p2.speedTimer  > 0) game.p2.speedTimer--;
+    if (game.p2.shieldTimer > 0) game.p2.shieldTimer--;
 
-    if (res1.dead || res2.dead) {
+    // Powerup lifetime
+    if (game.powerup.type !== 'none') {
+        if (--game.powerup.lifetime <= 0)
+            game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
+    }
+    // Spawn powerup if none on board
+    if (game.powerup.type === 'none' && --game.powerupSpawnTimer <= 0)
+        spawnPowerup();
+
+    // Speed snakes move twice per tick; normal snakes move once
+    let p1dead = false, p2dead = false;
+    for (let step = 0; step < 2; step++) {
+        const doP1 = step === 0 || p1speed;
+        const doP2 = step === 0 || p2speed;
+        let r1 = null, r2 = null;
+
+        if (doP1 && !p1dead) r1 = stepSnake(game.p1, game.p2);
+        if (doP2 && !p2dead) r2 = stepSnake(game.p2, game.p1);
+
+        if (r1?.ateFood || r2?.ateFood) spawnFood();
+
+        // Powerup pickup — snapshot type before clearing
+        const puType = game.powerup.type;
+        if (r1?.atePowerup) {
+            activatePowerup(game.p1, puType);
+            game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
+            game.powerupSpawnTimer = PU_SPAWN_GAP;
+        }
+        if (r2?.atePowerup) {
+            activatePowerup(game.p2, puType);
+            game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
+            game.powerupSpawnTimer = PU_SPAWN_GAP;
+        }
+
+        // Death — shielded players survive
+        if (r1?.dead && !p1shield) p1dead = true;
+        if (r2?.dead && !p2shield) p2dead = true;
+    }
+
+    if (p1dead || p2dead) {
         game.over = true;
-        if (res1.dead && res2.dead) game.winner = -1;
-        else if (res1.dead) game.winner = 2;
-        else game.winner = 1;
+        if (p1dead && p2dead) game.winner = -1;
+        else if (p1dead)      game.winner = 2;
+        else                  game.winner = 1;
     }
 
     updateUI();
 }
 
 function updateUI() {
-    const p1Num = document.getElementById('p1-num');
-    const p2Num = document.getElementById('p2-num');
+    const p1Num   = document.getElementById('p1-num');
+    const p2Num   = document.getElementById('p2-num');
+    const p1Buff  = document.getElementById('p1-buff');
+    const p2Buff  = document.getElementById('p2-buff');
     const statusEl = document.getElementById('status');
+
     if (p1Num) p1Num.textContent = Math.max(0, game.p1.body.length - 3);
     if (p2Num) p2Num.textContent = Math.max(0, game.p2.body.length - 3);
+
+    if (p1Buff) {
+        if      (game.p1.speedTimer  > 0) p1Buff.textContent = '⚡';
+        else if (game.p1.shieldTimer > 0) p1Buff.textContent = '🛡️';
+        else                              p1Buff.textContent = '';
+    }
+    if (p2Buff) {
+        if      (game.p2.speedTimer  > 0) p2Buff.textContent = '⚡';
+        else if (game.p2.shieldTimer > 0) p2Buff.textContent = '🛡️';
+        else                              p2Buff.textContent = '';
+    }
+
     if (game.over) {
-        if (game.winner === 1) statusEl.innerText = "🎀 PLAYER 1 WINS! ✨";
-        else if (game.winner === 2) statusEl.innerText = "💎 PLAYER 2 WINS! ✨";
-        else statusEl.innerText = "🌸 IT'S A DRAW! 🌸";
+        if (game.winner === 1) statusEl.innerText = '🎀 PLAYER 1 WINS! ✨';
+        else if (game.winner === 2) statusEl.innerText = '💎 PLAYER 2 WINS! ✨';
+        else statusEl.innerText = '🌸 IT\'S A DRAW! 🌸';
     } else {
-        statusEl.innerText = "";
+        statusEl.innerText = '';
     }
 }
 
@@ -461,28 +557,45 @@ function render(timeSec) {
         for (let gy = 0; gy < GRID_H; gy += 3)
             pushInst(gx, gy, C_GRID[0], C_GRID[1], C_GRID[2], 0, 0, 0);
 
-    // Pulsing food — color cycling, no eyes
+    // Pulsing food — color cycling
     let pulse = 0.85 + 0.15 * Math.sin(timeSec * 5.0);
     let foodLerp = 0.5 + 0.5 * Math.sin(timeSec * 2.0);
     let fc = lerpC(C_FOOD, C_FOOD2, foodLerp);
     pushInst(game.food.x, game.food.y, fc[0]*pulse, fc[1]*pulse, fc[2]*pulse, 0, 0, 0);
 
+    // Powerup — pulsing, distinct color per type
+    if (game.powerup.type !== 'none') {
+        const puPulse = 0.80 + 0.20 * Math.abs(Math.sin(timeSec * 6.0));
+        const puC = game.powerup.type === 'speed' ? C_SPEED_PU : C_SHIELD_PU;
+        pushInst(game.powerup.x, game.powerup.y,
+                 puC[0]*puPulse, puC[1]*puPulse, puC[2]*puPulse, 0, 0, 0);
+    }
+
     // Snake bodies — gradient fade, head[0] gets eyes
+    // Shield active: tint body slightly brighter / white-ish
     const tailDim = 0.55;
     const d1 = game.p1.dir, d2 = game.p2.dir;
     for (let i = 0; i < game.p1.body.length; i++) {
         let t = game.p1.body.length > 1 ? i / (game.p1.body.length - 1) : 0;
         let fade = 1.0 - t * (1.0 - tailDim);
+        let shield = game.p1.shieldTimer > 0 ? 0.25 : 0.0;
         let s = game.p1.body[i];
-        let head = (i === 0) ? 1 : 0;
-        pushInst(s.x, s.y, C_P1[0]*fade, C_P1[1]*fade, C_P1[2]*fade, head, d1.x, d1.y);
+        pushInst(s.x, s.y,
+            Math.min(1, C_P1[0]*fade + shield),
+            Math.min(1, C_P1[1]*fade + shield),
+            Math.min(1, C_P1[2]*fade + shield),
+            (i===0)?1:0, d1.x, d1.y);
     }
     for (let i = 0; i < game.p2.body.length; i++) {
         let t = game.p2.body.length > 1 ? i / (game.p2.body.length - 1) : 0;
         let fade = 1.0 - t * (1.0 - tailDim);
+        let shield = game.p2.shieldTimer > 0 ? 0.25 : 0.0;
         let s = game.p2.body[i];
-        let head = (i === 0) ? 1 : 0;
-        pushInst(s.x, s.y, C_P2[0]*fade, C_P2[1]*fade, C_P2[2]*fade, head, d2.x, d2.y);
+        pushInst(s.x, s.y,
+            Math.min(1, C_P2[0]*fade + shield),
+            Math.min(1, C_P2[1]*fade + shield),
+            Math.min(1, C_P2[2]*fade + shield),
+            (i===0)?1:0, d2.x, d2.y);
     }
 
     // 1. Base Pass (Instanced Rendering to FBO)
