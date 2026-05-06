@@ -13,7 +13,7 @@ uniform vec2  uCellSize;   // (WIN_W/GRID_W, WIN_H/GRID_H)
 out vec3 vColor;
 out vec2 vUV;              // local UV [0,1] for rounded-rect SDF
 
-const float PAD = 0.07;   // gap between cells (fraction of cell)
+const float PAD = 0.10;   // slightly more padding for cuter spaced-out cells
 
 void main()
 {

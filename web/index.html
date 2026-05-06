@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🐍 znake — cute pixel battle!</title>
+    <meta name="description" content="A cute pastel 2-player Snake/Tron game with pixel art aesthetics">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Floating pixel decorations -->
+    <div class="pixel-stars" aria-hidden="true"></div>
+
+    <div id="wrapper">
+        <div id="ui">
+            <h1 id="title">
+                <span class="title-icon">🌸</span>
+                <span class="title-text">znake</span>
+                <span class="title-icon">🌸</span>
+            </h1>
+            <div id="score-bar">
+                <div class="player-score" id="p1-score">
+                    <span class="player-tag p1-tag">🎀 P1</span>
+                    <span class="player-keys">(WASD)</span>
+                    <span class="score-num" id="p1-num">0</span>
+                </div>
+                <div class="score-divider">✦</div>
+                <div class="player-score" id="p2-score">
+                    <span class="player-tag p2-tag">💎 P2</span>
+                    <span class="player-keys">(Arrows)</span>
+                    <span class="score-num" id="p2-num">0</span>
+                </div>
+            </div>
+            <p id="status"></p>
+        </div>
+
+        <div id="canvas-frame">
+            <canvas id="gameCanvas" width="840" height="840"></canvas>
+            <div class="frame-corner tl"></div>
+            <div class="frame-corner tr"></div>
+            <div class="frame-corner bl"></div>
+            <div class="frame-corner br"></div>
+        </div>
+
+        <p id="hint">press <kbd>R</kbd> to restart · <kbd>ESC</kbd> to reset</p>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>

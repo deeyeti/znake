@@ -30,11 +30,13 @@ static constexpr float  CELL_W     = (float)WIN_W / GRID_W;
 static constexpr float  CELL_H     = (float)WIN_H / GRID_H;
 static constexpr double STEP_SECS  = 0.10;   // game tick every 100 ms
 
-// Colours (linear sRGB approximations)
-static const glm::vec3 C_P1   = {0.961f, 0.761f, 0.906f}; // #f5c2e7
-static const glm::vec3 C_P2   = {0.537f, 0.706f, 0.980f}; // #89b4fa
-static const glm::vec3 C_FOOD = {0.976f, 0.886f, 0.686f}; // #f9e2af
-static const glm::vec3 C_BG   = {0.118f, 0.118f, 0.180f}; // #1e1e2e
+// Colours — cute pastel palette
+static const glm::vec3 C_P1    = {1.000f, 0.702f, 0.851f}; // #ffb3d9 pastel pink
+static const glm::vec3 C_P2    = {0.702f, 0.831f, 1.000f}; // #b3d4ff pastel blue
+static const glm::vec3 C_FOOD  = {1.000f, 0.961f, 0.702f}; // #fff5b3 pastel yellow
+static const glm::vec3 C_FOOD2 = {0.851f, 0.702f, 1.000f}; // #d9b3ff lilac accent
+static const glm::vec3 C_BG    = {0.102f, 0.082f, 0.145f}; // #1a1525 deep purple
+static const glm::vec3 C_GRID  = {0.160f, 0.125f, 0.220f}; // subtle grid dot
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 static std::string readFile(const std::string& path)
@@ -413,24 +415,42 @@ static void renderFrame(const GameState& g, GL& gl, float time)
 {
     // Collect instances
     std::vector<InstanceData> instances;
-    instances.reserve(256);
+    instances.reserve(512);
 
     auto push = [&](glm::ivec2 cell, glm::vec3 col)
     {
         instances.push_back({ glm::vec2(cell), col });
     };
 
-    // Food (pulsing brightness)
-    float pulse = 0.9f + 0.1f * std::sin(time * 4.0f);
-    push(g.food, C_FOOD * pulse);
+    // Subtle grid dots (every 3rd cell)
+    for (int gx = 0; gx < GRID_W; gx += 3)
+        for (int gy = 0; gy < GRID_H; gy += 3)
+            push({gx, gy}, C_GRID);
 
-    // Bodies
-    for (auto& s : g.p1.body) push(s, g.p1.color);
-    for (auto& s : g.p2.body) push(s, g.p2.color);
+    // Food (pulsing brightness + color cycling between yellow and lilac)
+    float pulse = 0.85f + 0.15f * std::sin(time * 5.0f);
+    float foodLerp = 0.5f + 0.5f * std::sin(time * 2.0f);
+    glm::vec3 fc = glm::mix(C_FOOD, C_FOOD2, foodLerp);
+    push(g.food, fc * pulse);
 
-    // Head highlight (brighter)
-    if (!g.p1.body.empty()) push(g.p1.body.front(), g.p1.color * 1.35f);
-    if (!g.p2.body.empty()) push(g.p2.body.front(), g.p2.color * 1.35f);
+    // Bodies with gradient fade along length
+    const float tailDim = 0.55f;
+    for (int i = 0; i < (int)g.p1.body.size(); ++i)
+    {
+        float t = g.p1.body.size() > 1 ? (float)i / ((float)g.p1.body.size() - 1.f) : 0.f;
+        float fade = 1.0f - t * (1.0f - tailDim);
+        push(g.p1.body[i], g.p1.color * fade);
+    }
+    for (int i = 0; i < (int)g.p2.body.size(); ++i)
+    {
+        float t = g.p2.body.size() > 1 ? (float)i / ((float)g.p2.body.size() - 1.f) : 0.f;
+        float fade = 1.0f - t * (1.0f - tailDim);
+        push(g.p2.body[i], g.p2.color * fade);
+    }
+
+    // Bright heads
+    if (!g.p1.body.empty()) push(g.p1.body.front(), g.p1.color * 1.3f);
+    if (!g.p2.body.empty()) push(g.p2.body.front(), g.p2.color * 1.3f);
 
     // ── Base pass → FBO ──────────────────────────────────────────────────────
     glBindFramebuffer(GL_FRAMEBUFFER, gl.fbo);
@@ -502,7 +522,7 @@ int main()
 #endif
     glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
-    GLFWwindow* win = glfwCreateWindow(WIN_W, WIN_H, "znake", nullptr, nullptr);
+    GLFWwindow* win = glfwCreateWindow(WIN_W, WIN_H, "znake ~*~", nullptr, nullptr);
     if (!win)
     {
         std::cerr << "Window creation failed\n";
@@ -581,15 +601,15 @@ int main()
 
         // Window title with score info
         {
-            std::string title = "znake | P1(WASD): " +
+            std::string title = "znake | P1: " +
                                 std::to_string((int)game.p1.body.size() - 3) +
-                                "  P2(Arrows): " +
+                                "  P2: " +
                                 std::to_string((int)game.p2.body.size() - 3);
             if (game.over)
             {
-                if      (game.winner ==  1) title += "  ──  P1 WINS!  (R to reset)";
-                else if (game.winner ==  2) title += "  ──  P2 WINS!  (R to reset)";
-                else                        title += "  ──  DRAW!  (R to reset)";
+                if      (game.winner ==  1) title += "  ~  P1 WINS!  (R to reset)";
+                else if (game.winner ==  2) title += "  ~  P2 WINS!  (R to reset)";
+                else                        title += "  ~  DRAW!  (R to reset)";
             }
             glfwSetWindowTitle(win, title.c_str());
         }
