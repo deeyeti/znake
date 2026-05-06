@@ -1,204 +1,149 @@
-// 16:9 landscape board — 48×27 grid = 20px cells
-const GRID_W = 48;
-const GRID_H = 27;
-const WIN_W  = 960;
-const WIN_H  = 540;
-const CELL_W = WIN_W / GRID_W;  // 20
-const CELL_H = WIN_H / GRID_H;  // 20
+// 16:9 landscape board — 32×18 grid = 40px cells (bigger for easier gameplay)
+const GRID_W = 32;
+const GRID_H = 18;
+const WIN_W  = 1280;
+const WIN_H  = 720;
+const CELL_W = WIN_W / GRID_W;  // 40
+const CELL_H = WIN_H / GRID_H;  // 40
 const STEP_MS = 100;
 
-// Power-up durations
-const PU_TICKS    = 50;   // 50 * 100ms = 5 seconds
-const PU_LIFETIME = 25;   // ticks a powerup stays on board
-const PU_SPAWN_GAP = 18;  // ticks between spawn attempts
+const PU_TICKS    = 50;   // 5 seconds of effect
+const PU_RESPAWN  = 50;   // 5 seconds after pickup before it respawns
+const TRAIL_LEN   = 10;  // speed trail length in cells
 
-// Cute pastel palette
-const C_P1       = [1.0,   0.702, 0.851];  // #ffb3d9 pink
-const C_P2       = [0.702, 0.831, 1.0  ];  // #b3d4ff blue
-const C_FOOD     = [1.0,   0.961, 0.702];  // #fff5b3 yellow
-const C_FOOD2    = [0.851, 0.702, 1.0  ];  // #d9b3ff lilac
-const C_BG       = [0.102, 0.082, 0.145];  // #1a1525 deep purple
-const C_GRID     = [0.16,  0.125, 0.22 ];  // subtle grid dot
-const C_SPEED_PU  = [0.702, 1.0,   0.878];  // #b3ffd9 mint  ⚡
-const C_SHIELD_PU = [1.0,   0.863, 0.431];  // #ffdc6e gold  🛡️
+const C_P1  = [1.0,   0.702, 0.851];
+const C_P2  = [0.702, 0.831, 1.0  ];
+const C_FOOD = [1.0,  0.961, 0.702];
+const C_BG  = [0.102, 0.082, 0.145];
+const C_GRID = [0.16, 0.125, 0.22 ];
+// Speed trail colour (gold) — used in WebGL render
+const C_TRAIL = [1.0, 0.78, 0.2];
 
+// --- Game state ---
 let game = {
-    p1: { body: [], dir: {x:1,y:0}, nextDir: {x:1,y:0}, color: C_P1,
-          alive: true, grew: false, speedTimer: 0, shieldTimer: 0 },
-    p2: { body: [], dir: {x:-1,y:0}, nextDir: {x:-1,y:0}, color: C_P2,
-          alive: true, grew: false, speedTimer: 0, shieldTimer: 0 },
+    p1: { body: [], dir: {x:1,y:0}, nextDir: {x:1,y:0},
+          alive: true, grew: false, speedTimer: 0, shieldTimer: 0, trail: [] },
+    p2: { body: [], dir: {x:-1,y:0}, nextDir: {x:-1,y:0},
+          alive: true, grew: false, speedTimer: 0, shieldTimer: 0, trail: [] },
     food: {x:0, y:0},
-    powerup: {x:-1, y:-1, type:'none', lifetime:0},
-    powerupSpawnTimer: PU_SPAWN_GAP,
-    over: false,
-    winner: 0
+    speedPU:  { x:-1, y:-1, exists: false, spawnTimer: 5  },
+    shieldPU: { x:-1, y:-1, exists: false, spawnTimer: 15 },
+    over: false, winner: 0
 };
 
 function occupied(x, y) {
-    if (game.p1.body.some(s => s.x === x && s.y === y)) return true;
-    if (game.p2.body.some(s => s.x === x && s.y === y)) return true;
+    if (game.p1.body.some(s => s.x===x && s.y===y)) return true;
+    if (game.p2.body.some(s => s.x===x && s.y===y)) return true;
     return false;
 }
 
-function spawnFood() {
+function freeCell(exclude) {
     let free = [];
-    for (let y = 0; y < GRID_H; ++y) {
-        for (let x = 0; x < GRID_W; ++x) {
-            if (!occupied(x, y)) free.push({ x, y });
-        }
-    }
-    if (free.length === 0) return;
-    game.food = free[Math.floor(Math.random() * free.length)];
+    for (let y = 0; y < GRID_H; y++)
+        for (let x = 0; x < GRID_W; x++)
+            if (!occupied(x,y) && !exclude.some(e=>e&&e.x===x&&e.y===y))
+                free.push({x,y});
+    return free.length ? free[Math.floor(Math.random()*free.length)] : null;
+}
+
+function spawnFood() {
+    let pos = freeCell([game.speedPU.exists?game.speedPU:null,
+                        game.shieldPU.exists?game.shieldPU:null]);
+    if (pos) game.food = pos;
+}
+
+function spawnSpeedPU() {
+    let pos = freeCell([game.food, game.shieldPU.exists?game.shieldPU:null]);
+    if (pos) { game.speedPU.x=pos.x; game.speedPU.y=pos.y; game.speedPU.exists=true; }
+}
+function spawnShieldPU() {
+    let pos = freeCell([game.food, game.speedPU.exists?game.speedPU:null]);
+    if (pos) { game.shieldPU.x=pos.x; game.shieldPU.y=pos.y; game.shieldPU.exists=true; }
 }
 
 function resetGame() {
-    game.over = false;
-    game.winner = 0;
-
-    game.p1.body = [
-        { x: 5, y: Math.floor(GRID_H / 2) },
-        { x: 4, y: Math.floor(GRID_H / 2) },
-        { x: 3, y: Math.floor(GRID_H / 2) }
-    ];
-    game.p1.dir = { x: 1, y: 0 };
-    game.p1.nextDir = { x: 1, y: 0 };
-    game.p1.alive = true;
-
-    game.p2.body = [
-        { x: GRID_W - 6, y: Math.floor(GRID_H / 2) },
-        { x: GRID_W - 5, y: Math.floor(GRID_H / 2) },
-        { x: GRID_W - 4, y: Math.floor(GRID_H / 2) }
-    ];
-    game.p2.dir = { x: -1, y: 0 };
-    game.p2.nextDir = { x: -1, y: 0 };
-    game.p2.alive = true;
-
-    // Reset power-up state
-    game.p1.speedTimer  = 0; game.p1.shieldTimer = 0;
-    game.p2.speedTimer  = 0; game.p2.shieldTimer = 0;
-    game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
-    game.powerupSpawnTimer = PU_SPAWN_GAP;
-
+    game.over = false; game.winner = 0;
+    const my = Math.floor(GRID_H/2);
+    game.p1.body = [{x:5,y:my},{x:4,y:my},{x:3,y:my}];
+    game.p1.dir = game.p1.nextDir = {x:1,y:0};
+    game.p1.alive = true; game.p1.speedTimer=0; game.p1.shieldTimer=0; game.p1.trail=[];
+    game.p2.body = [{x:GRID_W-6,y:my},{x:GRID_W-5,y:my},{x:GRID_W-4,y:my}];
+    game.p2.dir = game.p2.nextDir = {x:-1,y:0};
+    game.p2.alive = true; game.p2.speedTimer=0; game.p2.shieldTimer=0; game.p2.trail=[];
+    game.speedPU  = {x:-1,y:-1,exists:false,spawnTimer:5};
+    game.shieldPU = {x:-1,y:-1,exists:false,spawnTimer:15};
     spawnFood();
     updateUI();
 }
 
-function spawnPowerup() {
-    // Pick a free cell not occupied by snakes or food
-    let free = [];
-    for (let y = 0; y < GRID_H; y++)
-        for (let x = 0; x < GRID_W; x++)
-            if (!occupied(x,y) && !(x===game.food.x && y===game.food.y))
-                free.push({x,y});
-    if (free.length === 0) return;
-    let pos  = free[Math.floor(Math.random() * free.length)];
-    let type = Math.random() < 0.5 ? 'speed' : 'shield';
-    game.powerup = {x:pos.x, y:pos.y, type, lifetime:PU_LIFETIME};
-    game.powerupSpawnTimer = PU_SPAWN_GAP + Math.floor(Math.random() * 10);
-}
-
-function activatePowerup(player, type) {
-    if (type === 'speed')  player.speedTimer  = PU_TICKS;
-    if (type === 'shield') player.shieldTimer = PU_TICKS;
-}
-
-function stepSnake(self, other) {
+function stepSnake(self, other, shielded) {
     let nd = self.nextDir;
-    // Prevent 180 degree reversal
-    if (nd.x + self.dir.x !== 0 || nd.y + self.dir.y !== 0) {
-        self.dir = { ...nd };
-    }
-
-    let newHead = { x: self.body[0].x + self.dir.x, y: self.body[0].y + self.dir.y };
-
-    // Wrap around screen
-    newHead.x = (newHead.x + GRID_W) % GRID_W;
-    newHead.y = (newHead.y + GRID_H) % GRID_H;
-
+    if (nd.x+self.dir.x!==0 || nd.y+self.dir.y!==0) self.dir={...nd};
+    let newHead = {
+        x: (self.body[0].x+self.dir.x+GRID_W)%GRID_W,
+        y: (self.body[0].y+self.dir.y+GRID_H)%GRID_H
+    };
     self.body.unshift(newHead);
     self.grew = false;
-    let ateFood = false, atePowerup = false;
-
-    if (newHead.x === game.food.x && newHead.y === game.food.y) {
-        self.grew = true;
-        ateFood = true;
-    } else if (game.powerup.type !== 'none' &&
-               newHead.x === game.powerup.x && newHead.y === game.powerup.y) {
-        atePowerup = true;  // powerup doesn't grow the snake
+    let ateFood=false, ateSpeed=false, ateShield=false;
+    if (newHead.x===game.food.x && newHead.y===game.food.y) {
+        self.grew=true; ateFood=true;
+    } else if (game.speedPU.exists && newHead.x===game.speedPU.x && newHead.y===game.speedPU.y) {
+        ateSpeed=true;
+    } else if (game.shieldPU.exists && newHead.x===game.shieldPU.x && newHead.y===game.shieldPU.y) {
+        ateShield=true;
     }
-
     if (!self.grew) self.body.pop();
-
-    // Collision check
-    let dead = false;
-    for (let i = 1; i < self.body.length; ++i)
-        if (self.body[i].x === newHead.x && self.body[i].y === newHead.y) dead = true;
-    for (let seg of other.body)
-        if (seg.x === newHead.x && seg.y === newHead.y) dead = true;
-
-    return { dead, ateFood, atePowerup };
+    let dead=false;
+    for (let i=1;i<self.body.length;++i)
+        if (self.body[i].x===newHead.x&&self.body[i].y===newHead.y) dead=true;
+    // Shield: pass through other snake
+    if (!shielded)
+        for (let seg of other.body)
+            if (seg.x===newHead.x&&seg.y===newHead.y) dead=true;
+    return {dead,ateFood,ateSpeed,ateShield};
 }
 
 function tickGame() {
     if (game.over) return;
-
-    // Snapshot speed/shield BEFORE decrement (so we apply full-tick benefit)
-    const p1speed  = game.p1.speedTimer  > 0;
-    const p1shield = game.p1.shieldTimer > 0;
-    const p2speed  = game.p2.speedTimer  > 0;
-    const p2shield = game.p2.shieldTimer > 0;
-
-    if (game.p1.speedTimer  > 0) game.p1.speedTimer--;
-    if (game.p1.shieldTimer > 0) game.p1.shieldTimer--;
-    if (game.p2.speedTimer  > 0) game.p2.speedTimer--;
-    if (game.p2.shieldTimer > 0) game.p2.shieldTimer--;
-
-    // Powerup lifetime
-    if (game.powerup.type !== 'none') {
-        if (--game.powerup.lifetime <= 0)
-            game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
-    }
-    // Spawn powerup if none on board
-    if (game.powerup.type === 'none' && --game.powerupSpawnTimer <= 0)
-        spawnPowerup();
-
-    // Speed snakes move twice per tick; normal snakes move once
-    let p1dead = false, p2dead = false;
-    for (let step = 0; step < 2; step++) {
-        const doP1 = step === 0 || p1speed;
-        const doP2 = step === 0 || p2speed;
-        let r1 = null, r2 = null;
-
-        if (doP1 && !p1dead) r1 = stepSnake(game.p1, game.p2);
-        if (doP2 && !p2dead) r2 = stepSnake(game.p2, game.p1);
-
-        if (r1?.ateFood || r2?.ateFood) spawnFood();
-
-        // Powerup pickup — snapshot type before clearing
-        const puType = game.powerup.type;
-        if (r1?.atePowerup) {
-            activatePowerup(game.p1, puType);
-            game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
-            game.powerupSpawnTimer = PU_SPAWN_GAP;
+    const p1speed=game.p1.speedTimer>0, p1shield=game.p1.shieldTimer>0;
+    const p2speed=game.p2.speedTimer>0, p2shield=game.p2.shieldTimer>0;
+    if (game.p1.speedTimer>0)  { game.p1.speedTimer--;  if(game.p1.speedTimer===0) game.p1.trail=[]; }
+    if (game.p1.shieldTimer>0) game.p1.shieldTimer--;
+    if (game.p2.speedTimer>0)  { game.p2.speedTimer--;  if(game.p2.speedTimer===0) game.p2.trail=[]; }
+    if (game.p2.shieldTimer>0) game.p2.shieldTimer--;
+    // Powerup spawn timers (only when not on board)
+    if (!game.speedPU.exists  && --game.speedPU.spawnTimer  <= 0) spawnSpeedPU();
+    if (!game.shieldPU.exists && --game.shieldPU.spawnTimer <= 0) spawnShieldPU();
+    let p1dead=false, p2dead=false;
+    for (let step=0; step<2; step++) {
+        const doP1=step===0||p1speed, doP2=step===0||p2speed;
+        let r1=null,r2=null;
+        if (doP1&&!p1dead) r1=stepSnake(game.p1,game.p2,p1shield);
+        if (doP2&&!p2dead) r2=stepSnake(game.p2,game.p1,p2shield);
+        if (r1?.ateFood||r2?.ateFood) spawnFood();
+        if (r1?.ateSpeed)  { game.p1.speedTimer=PU_TICKS;  game.speedPU.exists=false;  game.speedPU.spawnTimer=PU_RESPAWN; }
+        if (r1?.ateShield) { game.p1.shieldTimer=PU_TICKS; game.shieldPU.exists=false; game.shieldPU.spawnTimer=PU_RESPAWN; }
+        if (r2?.ateSpeed)  { game.p2.speedTimer=PU_TICKS;  game.speedPU.exists=false;  game.speedPU.spawnTimer=PU_RESPAWN; }
+        if (r2?.ateShield) { game.p2.shieldTimer=PU_TICKS; game.shieldPU.exists=false; game.shieldPU.spawnTimer=PU_RESPAWN; }
+        // Update speed trails
+        if (p1speed && doP1 && !p1dead && r1 && !r1.dead) {
+            game.p1.trail.unshift({...game.p1.body[0]});
+            if (game.p1.trail.length>TRAIL_LEN) game.p1.trail.pop();
         }
-        if (r2?.atePowerup) {
-            activatePowerup(game.p2, puType);
-            game.powerup = {x:-1, y:-1, type:'none', lifetime:0};
-            game.powerupSpawnTimer = PU_SPAWN_GAP;
+        if (p2speed && doP2 && !p2dead && r2 && !r2.dead) {
+            game.p2.trail.unshift({...game.p2.body[0]});
+            if (game.p2.trail.length>TRAIL_LEN) game.p2.trail.pop();
         }
-
-        // Death — shielded players survive
-        if (r1?.dead && !p1shield) p1dead = true;
-        if (r2?.dead && !p2shield) p2dead = true;
+        if (r1?.dead&&!p1shield) p1dead=true;
+        if (r2?.dead&&!p2shield) p2dead=true;
     }
-
-    if (p1dead || p2dead) {
-        game.over = true;
-        if (p1dead && p2dead) game.winner = -1;
-        else if (p1dead)      game.winner = 2;
-        else                  game.winner = 1;
+    if (p1dead||p2dead) {
+        game.over=true;
+        if (p1dead&&p2dead) game.winner=-1;
+        else if (p1dead)    game.winner=2;
+        else                game.winner=1;
     }
-
     updateUI();
 }
 
@@ -208,27 +153,22 @@ function updateUI() {
     const p1Buff  = document.getElementById('p1-buff');
     const p2Buff  = document.getElementById('p2-buff');
     const statusEl = document.getElementById('status');
-
     if (p1Num) p1Num.textContent = Math.max(0, game.p1.body.length - 3);
     if (p2Num) p2Num.textContent = Math.max(0, game.p2.body.length - 3);
-
-    if (p1Buff) {
-        if      (game.p1.speedTimer  > 0) p1Buff.textContent = '⚡';
-        else if (game.p1.shieldTimer > 0) p1Buff.textContent = '🛡️';
-        else                              p1Buff.textContent = '';
-    }
-    if (p2Buff) {
-        if      (game.p2.speedTimer  > 0) p2Buff.textContent = '⚡';
-        else if (game.p2.shieldTimer > 0) p2Buff.textContent = '🛡️';
-        else                              p2Buff.textContent = '';
-    }
-
-    if (game.over) {
-        if (game.winner === 1) statusEl.innerText = '🎀 PLAYER 1 WINS! ✨';
-        else if (game.winner === 2) statusEl.innerText = '💎 PLAYER 2 WINS! ✨';
-        else statusEl.innerText = '🌸 IT\'S A DRAW! 🌸';
-    } else {
-        statusEl.innerText = '';
+    const buffStr = (p) => {
+        let s = '';
+        if (p.speedTimer  > 0) s += '⚡';
+        if (p.shieldTimer > 0) s += '🛡️';
+        return s;
+    };
+    if (p1Buff) p1Buff.textContent = buffStr(game.p1);
+    if (p2Buff) p2Buff.textContent = buffStr(game.p2);
+    if (statusEl) {
+        if (game.over) {
+            if (game.winner===1)       statusEl.innerText = '🎀 PLAYER 1 WINS! ✨';
+            else if (game.winner===2)  statusEl.innerText = '💎 PLAYER 2 WINS! ✨';
+            else                       statusEl.innerText = '🌸 IT\'S A DRAW! 🌸';
+        } else statusEl.innerText = '';
     }
 }
 
@@ -333,46 +273,18 @@ void main() {
 
 const ppFS = `#version 300 es
 precision highp float;
-
 in vec2 vUV;
 out vec4 FragColor;
-
 uniform sampler2D uSceneSharp;
 uniform sampler2D uSceneSoft;
 uniform vec2 uResolution;
 uniform float uTime;
-
-vec3 extractBright(vec3 c) {
-    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    return c * max(0.0, lum - 0.18) / max(lum, 0.001);
-}
-
-vec3 bloom(vec2 uv) {
-    vec2 ts = 1.0 / uResolution;
-    vec3 acc = vec3(0.0);
-    float wTotal = 0.0;
-    for (int x = -4; x <= 4; ++x) {
-        for (int y = -4; y <= 4; ++y) {
-            float w = exp(-float(x*x + y*y) * 0.06);
-            vec3 s1 = extractBright(texture(uSceneSoft, uv + vec2(float(x), float(y)) * ts * 3.0).rgb);
-            vec3 s2 = extractBright(texture(uSceneSoft, uv + vec2(float(x), float(y)) * ts * 7.0).rgb);
-            acc += (s1 * 0.5 + s2 * 0.5) * w;
-            wTotal += w;
-        }
-    }
-    return (acc / wTotal) * 3.5;
-}
-
 void main() {
-    vec3 base  = texture(uSceneSharp, vUV).rgb;
-    vec3 color = base + bloom(vUV);
-
+    vec3 color = texture(uSceneSharp, vUV).rgb;
     color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0 / 2.2));
-
-    vec2 centre = vUV - 0.5;
-    color *= 1.0 - smoothstep(0.45, 0.90, length(centre) * 1.4);
-
+    color = pow(color, vec3(1.0/2.2));
+    vec2 c = vUV - 0.5;
+    color *= 1.0 - smoothstep(0.45, 0.90, length(c) * 1.4);
     FragColor = vec4(color, 1.0);
 }
 `;
@@ -552,50 +464,34 @@ function render(timeSec) {
         return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
     }
 
-    // Subtle grid dots — no head, no dir
-    for (let gx = 0; gx < GRID_W; gx += 3)
-        for (let gy = 0; gy < GRID_H; gy += 3)
-            pushInst(gx, gy, C_GRID[0], C_GRID[1], C_GRID[2], 0, 0, 0);
+    // Pulsing food — solid yellow
+    const pulse = 0.85 + 0.15 * Math.sin(timeSec * 5.0);
+    pushInst(game.food.x, game.food.y, C_FOOD[0]*pulse, C_FOOD[1]*pulse, C_FOOD[2]*pulse, 0, 0, 0);
+    // Grid dots
+    for (let gx=0;gx<GRID_W;gx+=4)
+        for (let gy=0;gy<GRID_H;gy+=4)
+            pushInst(gx,gy,C_GRID[0],C_GRID[1],C_GRID[2],0,0,0);
 
-    // Pulsing food — color cycling
-    let pulse = 0.85 + 0.15 * Math.sin(timeSec * 5.0);
-    let foodLerp = 0.5 + 0.5 * Math.sin(timeSec * 2.0);
-    let fc = lerpC(C_FOOD, C_FOOD2, foodLerp);
-    pushInst(game.food.x, game.food.y, fc[0]*pulse, fc[1]*pulse, fc[2]*pulse, 0, 0, 0);
+    // Speed trail (gold) — drawn BEFORE body so body renders on top
+    const goldDim = 0.45;
+    const drawTrail = (trail) => {
+        trail.forEach((pos, i) => {
+            const fade = goldDim * (1 - i / TRAIL_LEN);
+            pushInst(pos.x, pos.y, C_TRAIL[0]*fade*2, C_TRAIL[1]*fade*2, C_TRAIL[2]*fade, 0, 0, 0);
+        });
+    };
+    drawTrail(game.p1.trail);
+    drawTrail(game.p2.trail);
 
-    // Powerup — pulsing, distinct color per type
-    if (game.powerup.type !== 'none') {
-        const puPulse = 0.80 + 0.20 * Math.abs(Math.sin(timeSec * 6.0));
-        const puC = game.powerup.type === 'speed' ? C_SPEED_PU : C_SHIELD_PU;
-        pushInst(game.powerup.x, game.powerup.y,
-                 puC[0]*puPulse, puC[1]*puPulse, puC[2]*puPulse, 0, 0, 0);
+    // Snake bodies — solid colour, no gradient, head gets eyes
+    const d1=game.p1.dir, d2=game.p2.dir;
+    for (let i=0;i<game.p1.body.length;i++) {
+        const s=game.p1.body[i];
+        pushInst(s.x,s.y,C_P1[0],C_P1[1],C_P1[2],(i===0)?1:0,d1.x,d1.y);
     }
-
-    // Snake bodies — gradient fade, head[0] gets eyes
-    // Shield active: tint body slightly brighter / white-ish
-    const tailDim = 0.55;
-    const d1 = game.p1.dir, d2 = game.p2.dir;
-    for (let i = 0; i < game.p1.body.length; i++) {
-        let t = game.p1.body.length > 1 ? i / (game.p1.body.length - 1) : 0;
-        let fade = 1.0 - t * (1.0 - tailDim);
-        let shield = game.p1.shieldTimer > 0 ? 0.25 : 0.0;
-        let s = game.p1.body[i];
-        pushInst(s.x, s.y,
-            Math.min(1, C_P1[0]*fade + shield),
-            Math.min(1, C_P1[1]*fade + shield),
-            Math.min(1, C_P1[2]*fade + shield),
-            (i===0)?1:0, d1.x, d1.y);
-    }
-    for (let i = 0; i < game.p2.body.length; i++) {
-        let t = game.p2.body.length > 1 ? i / (game.p2.body.length - 1) : 0;
-        let fade = 1.0 - t * (1.0 - tailDim);
-        let shield = game.p2.shieldTimer > 0 ? 0.25 : 0.0;
-        let s = game.p2.body[i];
-        pushInst(s.x, s.y,
-            Math.min(1, C_P2[0]*fade + shield),
-            Math.min(1, C_P2[1]*fade + shield),
-            Math.min(1, C_P2[2]*fade + shield),
-            (i===0)?1:0, d2.x, d2.y);
+    for (let i=0;i<game.p2.body.length;i++) {
+        const s=game.p2.body[i];
+        pushInst(s.x,s.y,C_P2[0],C_P2[1],C_P2[2],(i===0)?1:0,d2.x,d2.y);
     }
 
     // 1. Base Pass (Instanced Rendering to FBO)
@@ -643,6 +539,87 @@ function render(timeSec) {
     gl.bindSampler(1, null);
 }
 
+// 2D canvas overlay: emoji powerups, shield glow, speed trail glow
+let overlayCtx = null;
+function initOverlay() {
+    const oc = document.getElementById('overlayCanvas');
+    if (!oc) return;
+    overlayCtx = oc.getContext('2d');
+    // Polyfill roundRect for older browsers
+    if (!CanvasRenderingContext2D.prototype.roundRect) {
+        CanvasRenderingContext2D.prototype.roundRect = function(x,y,w,h,r) {
+            r = Math.min(r, w/2, h/2);
+            this.moveTo(x+r,y); this.lineTo(x+w-r,y);
+            this.arcTo(x+w,y, x+w,y+h, r); this.lineTo(x+w,y+h-r);
+            this.arcTo(x+w,y+h, x,y+h, r); this.lineTo(x+r,y+h);
+            this.arcTo(x,y+h, x,y, r); this.lineTo(x,y+r);
+            this.arcTo(x,y, x+w,y, r); this.closePath();
+        };
+    }
+}
+
+function cellToCanvas(x, y) {
+    // WebGL y=0 is bottom; 2D canvas y=0 is top — flip y
+    return { cx: (x + 0.5) * CELL_W, cy: WIN_H - (y + 0.5) * CELL_H };
+}
+
+function renderOverlay(timeSec) {
+    if (!overlayCtx) return;
+    const ctx = overlayCtx;
+    ctx.clearRect(0, 0, WIN_W, WIN_H);
+    const fs = Math.floor(CELL_H * 0.78);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = fs + 'px serif';
+
+    // Shield glow — bright blue shadow around each body segment
+    const drawShieldGlow = (body, alpha) => {
+        ctx.save();
+        ctx.shadowColor = `rgba(80,160,255,${alpha})`;
+        ctx.shadowBlur = CELL_H * 0.7;
+        ctx.fillStyle = `rgba(100,180,255,0.18)`;
+        for (const seg of body) {
+            const {cx,cy} = cellToCanvas(seg.x, seg.y);
+            ctx.beginPath();
+            ctx.roundRect(cx-CELL_W*0.48, cy-CELL_H*0.48, CELL_W*0.96, CELL_H*0.96, CELL_H*0.15);
+            ctx.fill();
+        }
+        ctx.restore();
+    };
+    if (game.p1.shieldTimer>0) drawShieldGlow(game.p1.body, 0.85);
+    if (game.p2.shieldTimer>0) drawShieldGlow(game.p2.body, 0.85);
+
+    // Speed trail glow — golden shadow
+    const drawTrailGlow = (trail) => {
+        trail.forEach((pos, i) => {
+            const alpha = (1 - i/TRAIL_LEN) * 0.7;
+            const {cx,cy} = cellToCanvas(pos.x, pos.y);
+            ctx.save();
+            ctx.shadowColor = `rgba(255,200,30,${alpha})`;
+            ctx.shadowBlur = CELL_H * 0.8;
+            ctx.fillStyle = `rgba(255,190,20,${alpha*0.4})`;
+            ctx.beginPath();
+            ctx.roundRect(cx-CELL_W*0.38, cy-CELL_H*0.38, CELL_W*0.76, CELL_H*0.76, CELL_H*0.12);
+            ctx.fill();
+            ctx.restore();
+        });
+    };
+    drawTrailGlow(game.p1.trail);
+    drawTrailGlow(game.p2.trail);
+
+    // Powerup emojis — pulsing scale
+    const pu = 1.0 + 0.08 * Math.sin(timeSec * 5);
+    ctx.save(); ctx.scale(pu, pu);
+    if (game.speedPU.exists) {
+        const {cx,cy} = cellToCanvas(game.speedPU.x, game.speedPU.y);
+        ctx.fillText('⚡', cx/pu, cy/pu);
+    }
+    if (game.shieldPU.exists) {
+        const {cx,cy} = cellToCanvas(game.shieldPU.x, game.shieldPU.y);
+        ctx.fillText('🛡️', cx/pu, cy/pu);
+    }
+    ctx.restore();
+}
+
 // -----------------------------------------------------------------------------------------
 // GAME LOOP & INPUT
 // -----------------------------------------------------------------------------------------
@@ -670,6 +647,7 @@ function loop(time) {
     }
 
     render(now / 1000.0);
+    renderOverlay(now / 1000.0);
     requestAnimationFrame(loop);
 }
 
@@ -715,5 +693,6 @@ window.addEventListener('keydown', (e) => {
 
 // START
 initGL();
+initOverlay();
 resetGame();
 requestAnimationFrame(loop);
