@@ -226,8 +226,10 @@ static void tickGame(GameState& g)
 // ─── OpenGL Render State ─────────────────────────────────────────────────────
 struct InstanceData
 {
-    glm::vec2 offset;
-    glm::vec3 color;
+    glm::vec2 offset;    // grid cell
+    glm::vec3 color;     // pastel colour
+    float     isHead;    // 1.0 = head segment
+    glm::vec2 moveDir;   // snake direction (unit grid vector)
 };
 
 struct GL
@@ -279,22 +281,34 @@ static void buildQuadVAO(GL& gl)
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, nullptr);
 
-    // Instance buffer: aOffset (loc 1) + aColor (loc 2)
+    // Instance buffer
     glBindBuffer(GL_ARRAY_BUFFER, gl.instanceVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(InstanceData) * GRID_W * GRID_H * 3,
+    glBufferData(GL_ARRAY_BUFFER, sizeof(InstanceData) * GRID_W * GRID_H * 4,
                  nullptr, GL_DYNAMIC_DRAW);
 
-    // aOffset — vec2
+    // aOffset — vec2 (loc 1)
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
                           (void*)offsetof(InstanceData, offset));
     glVertexAttribDivisor(1, 1);
 
-    // aColor — vec3
+    // aColor — vec3 (loc 2)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
                           (void*)offsetof(InstanceData, color));
     glVertexAttribDivisor(2, 1);
+
+    // aIsHead — float (loc 3)
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                          (void*)offsetof(InstanceData, isHead));
+    glVertexAttribDivisor(3, 1);
+
+    // aMoveDir — vec2 (loc 4)
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                          (void*)offsetof(InstanceData, moveDir));
+    glVertexAttribDivisor(4, 1);
 
     glBindVertexArray(0);
 }
@@ -417,40 +431,41 @@ static void renderFrame(const GameState& g, GL& gl, float time)
     std::vector<InstanceData> instances;
     instances.reserve(512);
 
-    auto push = [&](glm::ivec2 cell, glm::vec3 col)
+    auto push = [&](glm::ivec2 cell, glm::vec3 col, float isHead, glm::vec2 dir)
     {
-        instances.push_back({ glm::vec2(cell), col });
+        instances.push_back({ glm::vec2(cell), col, isHead, dir });
     };
 
-    // Subtle grid dots (every 3rd cell)
+    // Subtle grid dots (every 3rd cell) — no head, no direction
     for (int gx = 0; gx < GRID_W; gx += 3)
         for (int gy = 0; gy < GRID_H; gy += 3)
-            push({gx, gy}, C_GRID);
+            push({gx, gy}, C_GRID, 0.f, {0.f, 0.f});
 
-    // Food (pulsing brightness + color cycling between yellow and lilac)
-    float pulse = 0.85f + 0.15f * std::sin(time * 5.0f);
-    float foodLerp = 0.5f + 0.5f * std::sin(time * 2.0f);
-    glm::vec3 fc = glm::mix(C_FOOD, C_FOOD2, foodLerp);
-    push(g.food, fc * pulse);
+    // Food — pulsing, color cycling, no eyes
+    float pulse    = 0.85f + 0.15f * std::sin(time * 5.0f);
+    float foodLerp = 0.5f  + 0.5f  * std::sin(time * 2.0f);
+    glm::vec3 fc   = glm::mix(C_FOOD, C_FOOD2, foodLerp);
+    push(g.food, fc * pulse, 0.f, {0.f, 0.f});
 
-    // Bodies with gradient fade along length
+    // Snake bodies — gradient fade head→tail, head segment gets eyes
     const float tailDim = 0.55f;
+    glm::vec2 dir1 = glm::vec2(g.p1.dir);
+    glm::vec2 dir2 = glm::vec2(g.p2.dir);
+
     for (int i = 0; i < (int)g.p1.body.size(); ++i)
     {
-        float t = g.p1.body.size() > 1 ? (float)i / ((float)g.p1.body.size() - 1.f) : 0.f;
+        float t    = g.p1.body.size() > 1 ? (float)i / ((float)g.p1.body.size() - 1.f) : 0.f;
         float fade = 1.0f - t * (1.0f - tailDim);
-        push(g.p1.body[i], g.p1.color * fade);
+        float head = (i == 0) ? 1.f : 0.f;
+        push(g.p1.body[i], g.p1.color * fade, head, dir1);
     }
     for (int i = 0; i < (int)g.p2.body.size(); ++i)
     {
-        float t = g.p2.body.size() > 1 ? (float)i / ((float)g.p2.body.size() - 1.f) : 0.f;
+        float t    = g.p2.body.size() > 1 ? (float)i / ((float)g.p2.body.size() - 1.f) : 0.f;
         float fade = 1.0f - t * (1.0f - tailDim);
-        push(g.p2.body[i], g.p2.color * fade);
+        float head = (i == 0) ? 1.f : 0.f;
+        push(g.p2.body[i], g.p2.color * fade, head, dir2);
     }
-
-    // Bright heads
-    if (!g.p1.body.empty()) push(g.p1.body.front(), g.p1.color * 1.3f);
-    if (!g.p2.body.empty()) push(g.p2.body.front(), g.p2.color * 1.3f);
 
     // ── Base pass → FBO ──────────────────────────────────────────────────────
     glBindFramebuffer(GL_FRAMEBUFFER, gl.fbo);

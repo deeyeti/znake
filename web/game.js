@@ -144,53 +144,82 @@ const baseVS = `#version 300 es
 layout(location = 0) in vec2 aPos;
 layout(location = 1) in vec2 aOffset;
 layout(location = 2) in vec3 aColor;
+layout(location = 3) in float aIsHead;
+layout(location = 4) in vec2 aMoveDir;
 
 uniform mat4 uProjection;
 uniform vec2 uCellSize;
 
-out vec3 vColor;
-out vec2 vUV;
+out vec3  vColor;
+out vec2  vUV;
+out float vIsHead;
+out vec2  vMoveDir;
 
-const float PAD = 0.10;
+const float PAD = 0.06;
 
 void main() {
     vec2 localPos = aPos * (1.0 - 2.0 * PAD) + PAD;
     vec2 world = (aOffset + localPos) * uCellSize;
     gl_Position = uProjection * vec4(world, 0.0, 1.0);
-    vColor = aColor;
-    vUV = aPos;
+    vColor   = aColor;
+    vUV      = aPos;
+    vIsHead  = aIsHead;
+    vMoveDir = aMoveDir;
 }
 `;
 
 const baseFS = `#version 300 es
 precision highp float;
 
-in vec3 vColor;
-in vec2 vUV;
+in vec3  vColor;
+in vec2  vUV;
+in float vIsHead;
+in vec2  vMoveDir;
 out vec4 FragColor;
 
-float roundRect(vec2 uv, float r) {
-    vec2 q = abs(uv - 0.5) - (0.5 - r);
-    return length(max(q, 0.0)) - r;
+float sdRoundedBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
+float sharp(float d) { return step(0.0, -d); }
+
 void main() {
-    float r = 0.25;
-    float d = roundRect(vUV, r);
-    float aa = fwidth(d);
-    float alpha = 1.0 - smoothstep(-aa, aa, d);
+    vec2 p = vUV - 0.5;
 
-    if (alpha < 0.01) discard;
+    // 1. Outer rounded-box shape
+    float dOuter = sdRoundedBox(p, vec2(0.42), 0.13);
+    if (sharp(dOuter) < 0.5) discard;
 
-    // Cute pillow-style highlight (top-left shine)
-    float highlight = smoothstep(0.45, 0.0, length(vUV - vec2(0.30, 0.30)));
-    vec3 col = vColor + highlight * 0.22;
+    // 2. Internal dark outline
+    float dInner     = sdRoundedBox(p, vec2(0.375), 0.08);
+    float insideInner = sharp(dInner);
+    vec3 col = mix(vColor * 0.28, vColor, insideInner);
 
-    // Soft outer glow edge
-    float edgeGlow = smoothstep(0.0, -0.08, d);
-    col += vColor * 0.08 * (1.0 - edgeGlow);
+    // 3. Top-left gloss sliver
+    float dGloss = length((p - vec2(-0.13, 0.13)) / vec2(1.0, 0.65)) - 0.16;
+    float gloss  = sharp(dGloss) * insideInner;
+    col += vec3(0.28, 0.24, 0.28) * gloss;
 
-    FragColor = vec4(col, alpha * 0.95);
+    // 4. Eyes on head segments
+    if (vIsHead > 0.5) {
+        vec2 fwd  = vMoveDir;
+        vec2 side = vec2(-fwd.y, fwd.x);
+
+        vec2 eye1 = fwd * 0.17 + side *  0.11;
+        vec2 eye2 = fwd * 0.17 - side *  0.11;
+
+        float p1 = sharp(length(p - eye1) - 0.075);
+        float p2 = sharp(length(p - eye2) - 0.075);
+        if ((p1 + p2) > 0.5) col = vec3(0.10, 0.06, 0.16);
+
+        vec2 gleamOff = vec2(0.026, 0.026);
+        float g1 = sharp(length(p - eye1 - gleamOff) - 0.028);
+        float g2 = sharp(length(p - eye2 - gleamOff) - 0.028);
+        if ((g1 + g2) > 0.5) col = vec3(1.0);
+    }
+
+    FragColor = vec4(col, 1.0);
 }
 `;
 
@@ -219,22 +248,18 @@ uniform float uTime;
 
 vec3 extractBright(vec3 c) {
     float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float thresh = 0.18;
-    return c * max(0.0, lum - thresh) / max(lum, 0.001);
+    return c * max(0.0, lum - 0.18) / max(lum, 0.001);
 }
 
 vec3 bloom(vec2 uv) {
     vec2 ts = 1.0 / uResolution;
     vec3 acc = vec3(0.0);
     float wTotal = 0.0;
-
     for (int x = -4; x <= 4; ++x) {
         for (int y = -4; y <= 4; ++y) {
             float w = exp(-float(x*x + y*y) * 0.06);
-            vec2 off1 = vec2(float(x), float(y)) * ts * 3.0;
-            vec2 off2 = vec2(float(x), float(y)) * ts * 7.0;
-            vec3 s1 = extractBright(texture(uSceneSoft, uv + off1).rgb);
-            vec3 s2 = extractBright(texture(uSceneSoft, uv + off2).rgb);
+            vec3 s1 = extractBright(texture(uSceneSoft, uv + vec2(float(x), float(y)) * ts * 3.0).rgb);
+            vec3 s2 = extractBright(texture(uSceneSoft, uv + vec2(float(x), float(y)) * ts * 7.0).rgb);
             acc += (s1 * 0.5 + s2 * 0.5) * w;
             wTotal += w;
         }
@@ -242,41 +267,22 @@ vec3 bloom(vec2 uv) {
     return (acc / wTotal) * 3.5;
 }
 
-// Sparkle pseudo-random hash
-float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-}
-
-float sparkle(vec2 uv, float t) {
-    vec2 cell = floor(uv * 40.0);
-    float h = hash(cell);
-    float phase = h * 6.28 + t * (1.5 + h * 2.0);
-    float brightness = pow(max(sin(phase), 0.0), 16.0);
-    // Only show sparkle on ~15% of cells
-    return brightness * step(0.85, h) * 0.35;
-}
-
 void main() {
-    vec3 base = texture(uSceneSharp, vUV).rgb;
-    vec3 glow = bloom(vUV);
-    vec3 color = base + glow;
+    vec3 base  = texture(uSceneSharp, vUV).rgb;
+    vec3 color = base + bloom(vUV);
 
-    // Tone mapping + gamma
     color = color / (color + vec3(1.0));
     color = pow(color, vec3(1.0 / 2.2));
 
-    // Gentle vignette (softer than before)
-    vec2 center = vUV - 0.5;
-    float vignette = 1.0 - smoothstep(0.45, 0.90, length(center) * 1.4);
-    color *= vignette;
-
-    // Sparkle overlay
-    float sp = sparkle(vUV, uTime);
-    color += vec3(0.9, 0.8, 1.0) * sp;
+    vec2 centre = vUV - 0.5;
+    color *= 1.0 - smoothstep(0.45, 0.90, length(centre) * 1.4);
 
     FragColor = vec4(color, 1.0);
 }
 `;
+
+
+
 
 function compileShader(gl, type, source) {
     const s = gl.createShader(type);
@@ -321,7 +327,8 @@ let fbo, fboTex;
 let sampNearest, sampLinear;
 let projMat;
 let maxInstances = GRID_W * GRID_H * 2 + 200;
-let instanceData = new Float32Array(maxInstances * 5);
+const INST_FLOATS = 8;  // offset(2) + color(3) + isHead(1) + moveDir(2)
+let instanceData = new Float32Array(maxInstances * INST_FLOATS);
 
 function initGL() {
     const canvas = document.getElementById('gameCanvas');
@@ -353,15 +360,25 @@ function initGL() {
     gl.bindBuffer(gl.ARRAY_BUFFER, instanceVBO);
     gl.bufferData(gl.ARRAY_BUFFER, instanceData.byteLength, gl.DYNAMIC_DRAW);
 
-    // aOffset
+    // aOffset — vec2 (loc 1), stride = 8 floats * 4 bytes = 32
     gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 0); // 5 floats * 4 bytes
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 32, 0);
     gl.vertexAttribDivisor(1, 1);
 
-    // aColor
+    // aColor — vec3 (loc 2), offset 8 bytes
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 20, 8); // offset 8 bytes
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, 32, 8);
     gl.vertexAttribDivisor(2, 1);
+
+    // aIsHead — float (loc 3), offset 20 bytes
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 1, gl.FLOAT, false, 32, 20);
+    gl.vertexAttribDivisor(3, 1);
+
+    // aMoveDir — vec2 (loc 4), offset 24 bytes
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 2, gl.FLOAT, false, 32, 24);
+    gl.vertexAttribDivisor(4, 1);
 
     gl.bindVertexArray(null);
 
@@ -417,16 +434,21 @@ function initGL() {
 }
 
 function render(timeSec) {
+    // --- Instance data build ---
     let numInstances = 0;
 
-    function pushInst(x, y, r, g, b) {
+
+    function pushInst(x, y, r, g, b, isHead, mx, my) {
         if (numInstances >= maxInstances) return;
-        let idx = numInstances * 5;
+        let idx = numInstances * INST_FLOATS;
         instanceData[idx++] = x;
         instanceData[idx++] = y;
         instanceData[idx++] = r;
         instanceData[idx++] = g;
         instanceData[idx++] = b;
+        instanceData[idx++] = isHead;
+        instanceData[idx++] = mx;
+        instanceData[idx++] = my;
         numInstances++;
     }
 
@@ -434,42 +456,33 @@ function render(timeSec) {
         return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
     }
 
-    // Subtle grid dots (every 3rd cell)
-    for (let gx = 0; gx < GRID_W; gx += 3) {
-        for (let gy = 0; gy < GRID_H; gy += 3) {
-            pushInst(gx, gy, C_GRID[0], C_GRID[1], C_GRID[2]);
-        }
-    }
+    // Subtle grid dots — no head, no dir
+    for (let gx = 0; gx < GRID_W; gx += 3)
+        for (let gy = 0; gy < GRID_H; gy += 3)
+            pushInst(gx, gy, C_GRID[0], C_GRID[1], C_GRID[2], 0, 0, 0);
 
-    // Pulsing food with color cycling between yellow and lilac
+    // Pulsing food — color cycling, no eyes
     let pulse = 0.85 + 0.15 * Math.sin(timeSec * 5.0);
     let foodLerp = 0.5 + 0.5 * Math.sin(timeSec * 2.0);
     let fc = lerpC(C_FOOD, C_FOOD2, foodLerp);
-    pushInst(game.food.x, game.food.y, fc[0] * pulse, fc[1] * pulse, fc[2] * pulse);
+    pushInst(game.food.x, game.food.y, fc[0]*pulse, fc[1]*pulse, fc[2]*pulse, 0, 0, 0);
 
-    // Bodies with gradient fade along length
-    const tailDim = 0.55; // tail is dimmer
+    // Snake bodies — gradient fade, head[0] gets eyes
+    const tailDim = 0.55;
+    const d1 = game.p1.dir, d2 = game.p2.dir;
     for (let i = 0; i < game.p1.body.length; i++) {
         let t = game.p1.body.length > 1 ? i / (game.p1.body.length - 1) : 0;
         let fade = 1.0 - t * (1.0 - tailDim);
         let s = game.p1.body[i];
-        pushInst(s.x, s.y, C_P1[0] * fade, C_P1[1] * fade, C_P1[2] * fade);
+        let head = (i === 0) ? 1 : 0;
+        pushInst(s.x, s.y, C_P1[0]*fade, C_P1[1]*fade, C_P1[2]*fade, head, d1.x, d1.y);
     }
     for (let i = 0; i < game.p2.body.length; i++) {
         let t = game.p2.body.length > 1 ? i / (game.p2.body.length - 1) : 0;
         let fade = 1.0 - t * (1.0 - tailDim);
         let s = game.p2.body[i];
-        pushInst(s.x, s.y, C_P2[0] * fade, C_P2[1] * fade, C_P2[2] * fade);
-    }
-
-    // Bright heads
-    if (game.p1.body.length > 0) {
-        let h = game.p1.body[0];
-        pushInst(h.x, h.y, C_P1[0] * 1.3, C_P1[1] * 1.3, C_P1[2] * 1.3);
-    }
-    if (game.p2.body.length > 0) {
-        let h = game.p2.body[0];
-        pushInst(h.x, h.y, C_P2[0] * 1.3, C_P2[1] * 1.3, C_P2[2] * 1.3);
+        let head = (i === 0) ? 1 : 0;
+        pushInst(s.x, s.y, C_P2[0]*fade, C_P2[1]*fade, C_P2[2]*fade, head, d2.x, d2.y);
     }
 
     // 1. Base Pass (Instanced Rendering to FBO)
@@ -483,7 +496,7 @@ function render(timeSec) {
     gl.uniform2f(gl.getUniformLocation(baseProg, "uCellSize"), CELL_W, CELL_H);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, instanceVBO);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, instanceData, 0, numInstances * 5);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, instanceData, 0, numInstances * INST_FLOATS);
 
     gl.bindVertexArray(quadVAO);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, numInstances);
